@@ -138,64 +138,30 @@ jobs:
         shell: bash
         run: |
           echo "检查并创建 D1 数据库..."
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+          npm install -g wrangler
 
-          # 1. 安装 jq（GitHub Actions 必须装，否则直接报错）
-          sudo apt-get update && sudo apt-get install -y jq
+          EXISTING_DB=$(wrangler d1 list --json | jq -r '.[] | select(.name=="cloudpaste-db") .uuid' || true)
 
-          # 2. 获取数据库列表
-          DATABASE_LIST=$(npx wrangler d1 list --json 2>/dev/null || echo "[]")
-          EXISTING_DB=$(echo "$DATABASE_LIST" | jq -r '.[] | select(.name=="cloudpaste-db") | .uuid' || true)
-
-          if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
-            echo "✅ 找到现有 D1 数据库: $EXISTING_DB"
-            DATABASE_ID=$EXISTING_DB
+          if [[ -n "$EXISTING_DB" && "$EXISTING" != "null" ]]; then
+            echo "✅ 找到现有数据库: $EXISTING_DB"
+            DATABASE_ID="$EXISTING_DB"
           else
-            echo "创建新的 D1 数据库..."
-            CREATE_OUTPUT=$(npx wrangler d1 create cloudpaste-db 2>&1)
+            echo "🆕 创建新数据库..."
+            DATABASE_ID=$(wrangler d1 create cloudpaste-db --json | jq -r .database.uuid)
 
-            # 提取 database_id
-            DATABASE_ID=$(echo "$CREATE_OUTPUT" | grep -oP "database_id = \"\K[^\"]+" || true)
-            if [ -z "$DATABASE_ID" ]; then
-              DATABASE_ID=$(echo "$CREATE_OUTPUT" | grep -oP "[0-9a-f-]{36}" || true)
-            fi
-
-            # 兜底检查
-            if [ -z "$DATABASE_ID" ] || [ "$DATABASE_ID" = "null" ]; then
-              LIST_OUTPUT=$(npx wrangler d1 list --json 2>/dev/null || echo "[]")
-              DATABASE_ID=$(echo "$LIST_OUTPUT" | jq -r '.[] | select(.name=="cloudpaste-db") | .uuid' || true)
-            fi
-
-            if [ -z "$DATABASE_ID" ] || [ "$DATABASE_ID" = "null" ]; then
-              echo "❌ 无法创建或找到 D1 数据库"
+            if [[ -z "$DATABASE_ID" || "$DATABASE_ID" == "null" ]]; then
+              echo "❌ 创建数据库失败"
               exit 1
             fi
-
-            echo "✅ 数据库创建成功: $DATABASE_ID"
+            echo "✅ 创建成功: $DATABASE_ID"
           fi
 
-          # 3. 关键修复：Linux / GitHub Actions 正确的 sed 命令
-          echo "更新 wrangler.spa.toml 中的数据库 ID..."
-          if [ ! -f "wrangler.spa.toml" ]; then
-            echo "❌ 错误：wrangler.spa.toml 文件不存在"
-            exit 1
-          fi
+          echo "更新 wrangler.spa.toml..."
+          sed -i'' "s|database_id = \"[^\"]*\"|database_id = \"$DATABASE_ID\"|" wrangler.spa.toml
 
-          # Linux 必须用 -i'' ！！！
-          sed -i'' -E "s/(database_id = \")[^\"]+\"/\1$DATABASE_ID\"/" wrangler.spa.toml
-
-          # 验证
-          if grep -q "$DATABASE_ID" wrangler.spa.toml; then
-            echo "✅ wrangler.spa.toml 更新成功"
-          else
-            echo "❌ wrangler.spa.toml 更新失败"
-            exit 1
-          fi
-
-          echo "database_id=$DATABASE_ID" >> $GITHUB_ENV
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-
+          grep -q "$DATABASE_ID" wrangler.spa.toml && echo "✅ 更新成功" || { echo "❌ 更新失败"; exit 1; }
           echo "database_id=$DATABASE_ID" >> $GITHUB_ENV
 
       - name: Initialize D1 Database schema
